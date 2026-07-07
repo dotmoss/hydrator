@@ -59,11 +59,10 @@ static class Program
         }
 
         ModuleUtils.FlattenTypes();
-        ModuleUtils.ConcretizeModuleReferences();
         MetadataRemover.RemoveNullableAttributes();
         MetadataRemover.RemoveAssemblyMetadataAttribute();
-        NamespaceRemover.RemoveNamespaces();
-        NameReducer.ReduceNames();
+        //NamespaceRemover.RemoveNamespaces();
+        //NameReducer.ReduceNames();
 
         VisibilityUtils.SolveVisibilityConflicts();
         //var genericParameters = TypeResolver.ResolveAllGenericParameters(module);
