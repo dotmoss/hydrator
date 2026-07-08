@@ -61,8 +61,8 @@ static class Program
         ModuleUtils.FlattenTypes();
         MetadataRemover.RemoveNullableAttributes();
         MetadataRemover.RemoveAssemblyMetadataAttribute();
-        //NamespaceRemover.RemoveNamespaces();
-        //NameReducer.ReduceNames();
+        NamespaceRemover.RemoveNamespaces();
+        NameReducer.ReduceNames();
 
         VisibilityUtils.SolveVisibilityConflicts();
         //var genericParameters = TypeResolver.ResolveAllGenericParameters(module);

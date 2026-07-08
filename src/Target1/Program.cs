@@ -15,6 +15,13 @@ public class Program
         Console.WriteLine(new OuterClass7<Program>.Inner8().Data == null);
         Console.WriteLine(new OuterClass7<Program>.Inner9().Data.GetType());
         Console.WriteLine(new Class10<Program>.Class11<Program1>.Class12<Program2>().GetType());
+        Console.WriteLine(entity.Method1());
+        Console.WriteLine(entity.Method2());
+        Console.WriteLine(entity.Property1);
+        Console.WriteLine(entity.Property2);
+        Console.WriteLine(entity.Field1);
+        Console.WriteLine(entity.Field2);
+        Console.WriteLine(Entity<Program>.StaticField1);
         new SomeClass().Display("message");
         Console.ReadLine();
     }
@@ -26,6 +33,28 @@ public class Entity<T>
     {
         Console.WriteLine("Initialized!");
     }
+
+    public int Method1()
+    {
+        Console.WriteLine("Method1!");
+        return 1;
+    }
+
+    public long Method2()
+    {
+        Console.WriteLine("Method2!");
+        return 2;
+    }
+
+    public int Property1 => 1;
+
+    public long Property2 => 2;
+
+    public int Field1 = 1;
+
+    public long Field2 = 2;
+
+    public static int StaticField1 = 3;
 
     public static class Dispatcher
     {

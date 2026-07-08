@@ -4,6 +4,7 @@ using AsmResolver.DotNet.Code.Cil;
 using AsmResolver.DotNet.Collections;
 using AsmResolver.DotNet.Signatures;
 using AsmResolver.PE.DotNet.Cil;
+using System.Diagnostics.CodeAnalysis;
 
 namespace Hydrator;
 
@@ -231,107 +232,99 @@ public static class ModuleMerger
         foreach (var (originalMethod, mergedMethod) in originalMethodsToMerged)
             MergeMethodBody(originalMethod, mergedMethod);
 
-        ITypeDefOrRef GetMergedTypeDefOrRef(ITypeDefOrRef? defOrRef)
-        {
-            switch (defOrRef)
+        ITypeDefOrRef GetMergedTypeDefOrRef(ITypeDefOrRef? defOrRef) =>
+            defOrRef switch
             {
-                case TypeDefinition originalTypeDefinition:
-                    if (originalTypesToMerged.TryGetValue(originalTypeDefinition, out var mergedTypeDefinition))
-                        return mergedTypeDefinition;
-                    return originalTypeDefinition;
+                TypeDefinition definition => originalTypesToMerged.GetValueOrDefault(definition) ?? definition,
+                TypeReference reference => reference.Resolve(Context) is { } resolvedDefinition ? originalTypesToMerged.GetValueOrDefault(resolvedDefinition) ?? resolvedDefinition : reference,
+                TypeSpecification specification => new TypeSpecification(GetMergedTypeSignature(specification.Signature!))
+            };
 
-                case TypeReference typeReference:
-                    if (typeReference.Resolve(Context) is { } resolvedDefinition)
-                        if (originalTypesToMerged.TryGetValue(resolvedDefinition, out var mergedDefinition))
-                            return mergedDefinition;
-                    return typeReference;
+        MethodDefinition GetMergedMethodDefinition(MethodDefinition definition) => originalMethodsToMerged.GetValueOrDefault(definition) ?? definition;
 
-                case TypeSpecification typeSpecification:
-                    if (GetMergedTypeSignature(typeSpecification.Signature!) is { } mergedSignature)
-                        return new TypeSpecification(mergedSignature);
-                    return typeSpecification;
+        IMethodDefOrRef GetMergedMethodReference(MemberReference reference)
+        {
+            var declaringType = GetMergedTypeDefOrRef(reference.DeclaringType);
+            var signature = GetMergedMethodSignature(((IMethodDescriptor)reference).Signature!);
+            if (declaringType is TypeDefinition declaringTypeDefenition)
+                if (signature.GenericParameterCount == 0)
+                    if (reference.TryResolve(Context, out var memberDefinition))
+                        if (memberDefinition is MethodDefinition methodDefinition)
+                            return GetMergedMethodDefinition(methodDefinition);
 
-                default:
-                    return defOrRef!;
-            }
+            return reference;
         }
 
-        IMethodDefOrRef GetMergedMethodDefOrRef(IMethodDefOrRef? defOrRef)
+        MethodSpecification GetMergedMethodSpecification(MethodSpecification specification)
         {
-            switch (defOrRef)
-            {
-                case MethodDefinition originalDefinition:
-                    {
-                        if (originalMethodsToMerged.TryGetValue(originalDefinition, out var mergedDefinition))
-                            return mergedDefinition;
-                        return originalDefinition;
-                    }
-                case MemberReference memberReference:
-                    {
-                        if (memberReference.Resolve(Context) is { } resolvedMemberDefinition)
-                            if (resolvedMemberDefinition is MethodDefinition resolvedMethodDefinition)
-                                if (originalMethodsToMerged.TryGetValue(resolvedMethodDefinition, out var mergedDefinition))
-                                    if (mergedDefinition is IMethodDefOrRef mergedDefOrRef)
-                                        return mergedDefOrRef;
+            var instantiation = new GenericInstanceMethodSignature();
+            foreach (var argument in specification.Signature!.TypeArguments)
+                instantiation.TypeArguments.Add(GetMergedTypeSignature(argument));
 
-                        return new MemberReference(GetMergedTypeDefOrRef(defOrRef.DeclaringType), defOrRef.Name, GetMergedMethodSignature(defOrRef.Signature!));
-                    }
-                default:
-                    return defOrRef!;
-            }
+            return new MethodSpecification(GetMergedMethodDefOrRef(specification.Method), instantiation);
         }
 
-        IMethodDescriptor GetMergedMethodDescriptor(IMethodDescriptor? descriptor)
-        {
-            switch (descriptor)
+        IMethodDefOrRef GetMergedMethodDefOrRef(IMethodDefOrRef? defOrRef) =>
+            defOrRef switch
             {
-                case MemberReference reference:
-                    {
-                        return GetMergedMethodReference(reference);
-                    }
-                case IMethodDefOrRef defOrRef:
-                    {
-                        return GetMergedMethodDefOrRef(defOrRef);
-                    }
-                case MethodSpecification specification:
-                    {
-                        var memberRef = GetMergedMethodDefOrRef(specification.Method);
+                MethodDefinition definition => GetMergedMethodDefinition(definition),
+                MemberReference reference => GetMergedMethodReference(reference)
+            };
 
-                        var instantiation = new GenericInstanceMethodSignature();
-                        foreach (var argument in specification.Signature!.TypeArguments)
-                            instantiation.TypeArguments.Add(GetMergedTypeSignature(argument));
+        IMethodDescriptor GetMergedMethodDescriptor(IMethodDescriptor? descriptor) =>
+            descriptor switch
+            {
+                IMethodDefOrRef defOrRef => GetMergedMethodDefOrRef(defOrRef),
+                MethodSpecification specification => GetMergedMethodSpecification(specification)
+            };
 
-                        return new MethodSpecification(memberRef, instantiation);
-                    }
-                default:
-                    throw null!;
-            }
+        GenericInstanceMethodSignature GetMergedGenericInstanceMethodSignature(GenericInstanceMethodSignature originalSignature)
+        {
+            var typeArguments = new TypeSignature[originalSignature.TypeArguments.Count];
+            for (int i = 0; i < typeArguments.Length; i++)
+                typeArguments[i] = GetMergedTypeSignature(originalSignature.TypeArguments[i]);
+
+            return new GenericInstanceMethodSignature(originalSignature.Attributes, typeArguments);
         }
 
-        IFieldDescriptor GetMergedFieldDescriptor(IFieldDescriptor? descriptor)
-        {
-            switch (descriptor)
+        IFieldDescriptor GetMergedFieldDescriptor(IFieldDescriptor? descriptor) =>
+            descriptor switch
             {
-                case FieldDefinition originalDefinition:
-                    {
-                        if (originalFieldsToMerged.TryGetValue(originalDefinition, out var mergedDefinition))
-                            return mergedDefinition;
-                        return originalDefinition;
-                    }
-                case MemberReference memberReference:
-                    {
-                        if (memberReference.Resolve(Context) is { } resolvedMemberDefinition)
-                            if (resolvedMemberDefinition is FieldDefinition resolvedFieldDefinition)
-                                if (originalFieldsToMerged.TryGetValue(resolvedFieldDefinition, out var mergedDefinition))
-                                    if (mergedDefinition is IFieldDescriptor mergedDefOrRef)
-                                        return mergedDefOrRef;
+                FieldDefinition definition => originalFieldsToMerged.GetValueOrDefault(definition) ?? definition,
+                MemberReference reference => GetMergedFieldReference(reference),
+            };
 
-                        return new MemberReference(GetMergedTypeDefOrRef(descriptor.DeclaringType as ITypeDefOrRef), descriptor.Name, GetMergedFieldSignature(descriptor.Signature!));
-                    }
-                default:
-                    return descriptor!;
-            }
+        FieldSignature GetMergedFieldSignature(FieldSignature originalSignature) => new FieldSignature(originalSignature.CallingConvention, GetMergedTypeSignature(originalSignature.FieldType));
+
+        MethodSignature GetMergedMethodSignature(MethodSignature originalSignature)
+        {
+            var originalParameters = originalSignature!.ParameterTypes;
+            var parameterTypes = new TypeSignature[originalParameters.Count];
+            for (int i = 0; i < parameterTypes.Length; i++)
+                parameterTypes[i] = GetMergedTypeSignature(originalParameters[i]);
+
+            var mergedSignature = new MethodSignature(originalSignature.Attributes, GetMergedTypeSignature(originalSignature.ReturnType), parameterTypes);
+            mergedSignature.GenericParameterCount = originalSignature.GenericParameterCount;
+
+            foreach (var sentinelParameterType in originalSignature.SentinelParameterTypes)
+                mergedSignature.SentinelParameterTypes.Add(GetMergedTypeSignature(sentinelParameterType));
+
+            return mergedSignature;
         }
+
+        IFieldDescriptor GetMergedFieldReference(MemberReference reference)
+        {
+            var declaringType = GetMergedTypeDefOrRef(reference.DeclaringType);
+            var signature = GetMergedFieldSignature(((IFieldDescriptor)reference).Signature!);
+            if (declaringType is TypeDefinition declaringTypeDefenition)
+                if (reference.TryResolve(Context, out var memberDefinition))
+                    if (memberDefinition is FieldDefinition fieldDefinition)
+                        return GetMergedFieldDefinition(fieldDefinition);
+
+            return reference;
+        }
+
+        FieldDefinition GetMergedFieldDefinition(FieldDefinition definition) => originalFieldsToMerged.GetValueOrDefault(definition) ?? definition;
 
         ICustomAttributeType GetMergedCustomAttributeType(ICustomAttributeType customAttributeType)
         {
@@ -404,67 +397,6 @@ public static class ModuleMerger
                         _ => originalSignature
                     };
             }
-        }
-
-        FieldSignature GetMergedFieldSignature(FieldSignature originalSignature)
-        {
-            var mergedTypeSignature = GetMergedTypeSignature(originalSignature.FieldType);
-            return new FieldSignature(originalSignature.CallingConvention, mergedTypeSignature);
-        }
-
-        MethodSignature GetMergedMethodSignature(MethodSignature originalSignature)
-        {
-            var originalParameters = originalSignature!.ParameterTypes;
-            var parameterTypes = new TypeSignature[originalParameters.Count];
-            for (int i = 0; i < parameterTypes.Length; i++)
-                parameterTypes[i] = GetMergedTypeSignature(originalParameters[i]);
-
-            var mergedSignature = new MethodSignature(originalSignature.Attributes, GetMergedTypeSignature(originalSignature.ReturnType), parameterTypes);
-            mergedSignature.GenericParameterCount = originalSignature.GenericParameterCount;
-
-            foreach (var sentinelParameterType in originalSignature.SentinelParameterTypes)
-                mergedSignature.SentinelParameterTypes.Add(GetMergedTypeSignature(sentinelParameterType));
-
-            return mergedSignature;
-        }
-
-        IFieldDescriptor GetMergedFieldReference(MemberReference memberReference)
-        {
-            if (memberReference.TryResolve(Context, out var memberDefinition))
-            {
-                if (memberDefinition.DeclaringModule == Module)
-                    return (IFieldDescriptor)memberDefinition;
-
-                if (memberDefinition is FieldDefinition fieldDefinition)
-                    if (originalFieldsToMerged.TryGetValue(fieldDefinition, out var mergedField))
-                        return mergedField;
-            }
-
-            return new MemberReference(GetMergedTypeDefOrRef(memberReference.DeclaringType), memberReference.Name, GetMergedFieldSignature(((IFieldDescriptor)memberReference).Signature!));
-        }
-
-        IMethodDescriptor GetMergedMethodReference(MemberReference memberReference)
-        {
-            if (memberReference.TryResolve(Context, out var memberDefinition))
-            {
-                if (memberDefinition.DeclaringModule == Module)
-                    return (IMethodDescriptor)memberDefinition;
-
-                if (memberDefinition is MethodDefinition methodDefinition)
-                    if (originalMethodsToMerged.TryGetValue(methodDefinition, out var mergedMethod))
-                        return mergedMethod;
-            }
-
-            return new MemberReference(GetMergedTypeDefOrRef(memberReference.DeclaringType), memberReference.Name, GetMergedMethodSignature(((IMethodDescriptor)memberReference).Signature!));
-        }
-
-        GenericInstanceMethodSignature GetMergedGenericInstanceMethodSignature(GenericInstanceMethodSignature originalSignature)
-        {
-            var typeArguments = new TypeSignature[originalSignature.TypeArguments.Count];
-            for (int i = 0; i < typeArguments.Length; i++)
-                typeArguments[i] = GetMergedTypeSignature(originalSignature.TypeArguments[i]);
-
-            return new GenericInstanceMethodSignature(originalSignature.Attributes, typeArguments);
         }
 
         PropertySignature MergePropertySignature(PropertySignature propertySignature)
@@ -738,9 +670,7 @@ public static class ModuleMerger
                     var clonedInstruction = new CilInstruction(instruction.Offset, instruction.OpCode);
                     switch (instruction.OpCode.OperandType)
                     {
-                        case CilOperandType.InlineBrTarget:
-                        case CilOperandType.ShortInlineBrTarget:
-                        case CilOperandType.InlineSwitch:
+                        case CilOperandType.InlineBrTarget or CilOperandType.ShortInlineBrTarget or CilOperandType.InlineSwitch:
                             clonedInstruction.Operand = instruction.Operand;
                             break;
 
@@ -756,8 +686,7 @@ public static class ModuleMerger
                             clonedInstruction.Operand = new StandAloneSignature(standAlone.Signature switch
                             {
                                 MethodSignature signature => GetMergedMethodSignature(signature),
-                                GenericInstanceMethodSignature signature => GetMergedGenericInstanceMethodSignature(signature),
-                                _ => throw null!
+                                GenericInstanceMethodSignature signature => GetMergedGenericInstanceMethodSignature(signature)
                             });
                             break;
 
@@ -765,16 +694,9 @@ public static class ModuleMerger
                             clonedInstruction.Operand = GetMergedTypeDefOrRef(type);
                             break;
 
-                        case CilOperandType.InlineI:
-                        case CilOperandType.InlineI8:
-                        case CilOperandType.InlineNone:
-                        case CilOperandType.InlineR:
-                        case CilOperandType.InlineString:
-                        case CilOperandType.ShortInlineI:
-                        case CilOperandType.ShortInlineR:
-                        case CilOperandType.InlineField:
-                        case CilOperandType.InlineMethod:
-                        case CilOperandType.InlineType:
+                        case CilOperandType.InlineI or CilOperandType.InlineI8 or CilOperandType.InlineNone or CilOperandType.InlineR or CilOperandType.InlineString or
+                             CilOperandType.ShortInlineI or CilOperandType.ShortInlineI or CilOperandType.ShortInlineI or CilOperandType.ShortInlineR or
+                             CilOperandType.InlineField or CilOperandType.InlineMethod or CilOperandType.InlineType:
                             clonedInstruction.Operand = instruction.Operand;
                             break;
 
@@ -782,15 +704,13 @@ public static class ModuleMerger
                             clonedInstruction.Operand = CloneInlineTokOperand(instruction);
                             break;
 
-                        case CilOperandType.InlineVar:
-                        case CilOperandType.ShortInlineVar:
+                        case CilOperandType.InlineVar or CilOperandType.ShortInlineVar:
                             clonedInstruction.Operand = instruction.Operand is CilLocalVariable local
                                 ? destinationBody.LocalVariables[local.Index]
                                 : instruction.Operand;
                             break;
 
-                        case CilOperandType.InlineArgument:
-                        case CilOperandType.ShortInlineArgument:
+                        case CilOperandType.InlineArgument or CilOperandType.ShortInlineArgument:
                             clonedInstruction.Operand = instruction.Operand is Parameter parameter
                                 ? destinationBody.Owner!.Parameters.GetBySignatureIndex(parameter.MethodSignatureIndex)
                                 : instruction.Operand;
