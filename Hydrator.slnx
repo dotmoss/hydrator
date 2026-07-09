@@ -11,12 +11,12 @@
       <BuildType Project="Release" />
       <Platform Project="x64" />
     </Project>
-    <Project Path="Target1Dep/Target1Dep.csproj" Id="4d33ef24-0f6e-4ec2-ab9e-12960f104e2c">
+    <Project Path="src/Target1Dep/Target1Dep.csproj" Id="4d33ef24-0f6e-4ec2-ab9e-12960f104e2c">
       <BuildType Project="Release" />
       <Platform Project="x64" />
     </Project>
   </Folder>
-  <Project Path="src\Hydrator\Hydrator.csproj">
+  <Project Path="src/Hydrator/Hydrator.csproj">
     <Platform Project="x64" />
   </Project>
 </Solution>

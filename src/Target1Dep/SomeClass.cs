@@ -2,7 +2,9 @@
 
 public class SomeClass
 {
-    public void Display(string message)
+    public int SomeProperty { get; set; }
+
+    public void Display<T>(T message)
     {
         Console.WriteLine(message);
     }

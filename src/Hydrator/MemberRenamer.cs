@@ -22,11 +22,12 @@ public static class MemberRenamer
                     continue;
 
                 foreach (var instruction in body.Instructions)
-                    if (instruction.Operand is MemberReference memberReference && memberReference.Name == oldName)
-                        if (memberReference.DeclaringType!.TryResolve(Context, out var resolvedDeclaringType))
-                            if (resolvedDeclaringType == definition.DeclaringType)
-                                if (SignatureComparer.Default.Equals(memberReference.Signature, definition.Signature))
-                                    memberReference.Name = newName;
+                    if (instruction.Operand is MemberReference memberReference)
+                        if (memberReference.Name == oldName)
+                            if (memberReference.DeclaringType!.TryResolve(Context, out var resolvedDeclaringType))
+                                if (resolvedDeclaringType == definition.DeclaringType)
+                                    if (SignatureComparer.Default.Equals(memberReference.Signature, definition.Signature))
+                                        memberReference.Name = newName;
             }
         }
     }
@@ -52,22 +53,23 @@ public static class MemberRenamer
                     {
                         case MemberReference memberReference:
                             {
-                                if (memberReference.DeclaringType!.TryResolve(Context, out var resolvedDeclaringType))
-                                    if (resolvedDeclaringType == definition.DeclaringType)
-                                        if (SignatureComparer.Default.Equals(memberReference.Signature, definition.Signature))
-                                            if (memberReference.Name == oldName)
-                                                memberReference.Name = newName;
+                                if (memberReference.Name == oldName)
+                                    if (memberReference.DeclaringType!.TryResolve(Context, out var resolvedDeclaringType))
+                                        if (resolvedDeclaringType == definition.DeclaringType)
+                                            if (SignatureComparer.Default.Equals(memberReference.Signature, definition.Signature))
+                                                    memberReference.Name = newName;
                                 break;
                             }
                         case MethodSpecification methodSpecification:
                             {
-                                if (methodSpecification.TryResolve(Context, out var resolvedMethod) && resolvedMethod == definition)
-                                    if (methodSpecification.Method is MemberReference memberReference)
-                                        if (memberReference.DeclaringType!.TryResolve(Context, out var resolvedDeclaringType))
-                                            if (resolvedDeclaringType == definition.DeclaringType)
-                                                if (SignatureComparer.Default.Equals(memberReference.Signature, definition.Signature))
-                                                if (memberReference.Name == oldName)
-                                                        memberReference.Name = newName;
+                                if (methodSpecification.TryResolve(Context, out var resolvedMethod))
+                                    if (resolvedMethod == definition)
+                                        if (methodSpecification.Method is MemberReference memberReference)
+                                            if (memberReference.Name == oldName)
+                                                if (memberReference.DeclaringType!.TryResolve(Context, out var resolvedDeclaringType))
+                                                    if (resolvedDeclaringType == definition.DeclaringType)
+                                                        if (SignatureComparer.Default.Equals(memberReference.Signature, definition.Signature))
+                                                                memberReference.Name = newName;
                                 break;
                             }
                     }

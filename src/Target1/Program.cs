@@ -21,9 +21,28 @@ public class Program
         Console.WriteLine(entity.Property2);
         Console.WriteLine(entity.Field1);
         Console.WriteLine(entity.Field2);
+        Console.WriteLine(new SomeClass().SomeProperty);
         Console.WriteLine(Entity<Program>.StaticField1);
         new SomeClass().Display("message");
+        new B().a();
         Console.ReadLine();
+    }
+}
+
+public class A
+{
+    internal virtual void a()
+    {
+        Console.WriteLine("a");
+    }
+}
+
+public class B : A
+{
+    internal override void a()
+    {
+        base.a();
+        Console.WriteLine("b");
     }
 }
 

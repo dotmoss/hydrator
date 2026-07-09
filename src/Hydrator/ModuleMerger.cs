@@ -4,13 +4,77 @@ using AsmResolver.DotNet.Code.Cil;
 using AsmResolver.DotNet.Collections;
 using AsmResolver.DotNet.Signatures;
 using AsmResolver.PE.DotNet.Cil;
-using System.Diagnostics.CodeAnalysis;
+using AsmResolver.PE.File;
 
 namespace Hydrator;
 
 public static class ModuleMerger
 {
-    public static void MergeModules(List<ModuleDefinition> modules)
+    public static void MergeModuleAndReferencesInNewModule()
+    {
+        var modules = GetModulesForMerge();
+        modules.Add(Module);
+
+        var isILOnly = !modules.Any(module => !module.IsILOnly);
+        var mergedAssembly = new AssemblyDefinition(Module.Assembly!.Name, new Version(0, 0, 0, 0));
+        var mergedModule = new ModuleDefinition(Module.Name, Context.TargetRuntime)
+        {
+            PEKind = OptionalHeaderMagic.PE32Plus,
+            MachineType = MachineType.Amd64,
+            IsBit32Required = false,
+            IsILOnly = isILOnly
+        };
+
+        mergedAssembly.Modules.Add(mergedModule);
+
+        var tfmAttribute = Module.Assembly!.CustomAttributes.First(attribute => attribute.Type is { } attributeType && attributeType.Name == "TargetFrameworkAttribute");
+        tfmAttribute = new CustomAttribute(tfmAttribute.Constructor, tfmAttribute.Signature);
+        mergedAssembly.CustomAttributes.Add(tfmAttribute);
+
+        var entryPointName = Module.ManagedEntryPointMethod!.FullName;
+
+        Module = mergedModule;
+        MergeModules(modules);
+        Module.ManagedEntryPointMethod = Module.GetAllTypes().SelectMany(t => t.Methods).FirstOrDefault(m => m.FullName == entryPointName);
+
+        Context = new RuntimeContext(Context.TargetRuntime);
+        Context.AddAssembly(Module.Assembly!);
+
+        List<ModuleDefinition> GetModulesForMerge()
+        {
+            var modules = new List<ModuleDefinition>();
+            GetReferences(Module, modules);
+
+            return modules;
+
+            void GetReferences(ModuleDefinition module, List<ModuleDefinition> references)
+            {
+                foreach (var reference in module.AssemblyReferences)
+                {
+                    try
+                    {
+                        if (reference.Resolve(Module.RuntimeContext) is not { } assembly)
+                            continue;
+
+                        foreach (var assemblyModule in assembly.Modules)
+                        {
+                            if (assemblyModule.FilePath is not { } assemblyPath || assemblyPath.Contains(@"dotnet\shared"))
+                                continue;
+
+                            if (references.Contains(assemblyModule))
+                                continue;
+
+                            modules.Add(assemblyModule);
+                            GetReferences(assemblyModule, references);
+                        }
+                    }
+                    catch { }
+                }
+            }
+        }
+    }
+
+    static void MergeModules(List<ModuleDefinition> modules)
     {
         var typeNamespacesAndNames = new Dictionary<string, List<string>>();
         var originalTypesToMerged = new Dictionary<TypeDefinition, TypeDefinition>();
@@ -21,33 +85,37 @@ public static class ModuleMerger
         var originalEventsToMerged = new Dictionary<EventDefinition, EventDefinition>();
         var original01CCtors = new List<MethodDefinition>();
 
-        var moduleTypes = Module.GetAllTypes();
         var merged01Cctor = Module.GetOrCreateModuleConstructor();
-        foreach (var type in Module.TopLevelTypes)
-        {
-            var @namespace = type.Namespace??string.Empty;
-
-            if (!typeNamespacesAndNames.TryGetValue(@namespace, out var names))
-                typeNamespacesAndNames.Add(@namespace, names = new List<string>());
-
-            names.Add(type.Name!);
-        }
 
         foreach (var module in modules)
         {
+            foreach (var resource in module.Resources)
+            {
+                var data = resource.GetData() ?? throw null!;
+                var mergedResource = new ManifestResource(resource.Name, resource.Attributes, new DataSegment(data));
+                Module.Resources.Add(mergedResource);
+            }
+
             foreach (var type in module.TopLevelTypes)
             {
                 if (type.IsModuleType)
                     continue;
 
                 var typeName = type.Name ?? string.Empty;
-                if (typeNamespacesAndNames.TryGetValue(type.Namespace ?? string.Empty, out var names))
+                var typeNamespace = type.Namespace ?? string.Empty;
+                if (typeNamespacesAndNames.TryGetValue(typeNamespace, out var names))
                 {
                     var originalName = typeName;
                     var counter = 0;
                     while (names.Contains(typeName))
                         typeName = originalName + counter++;
                 }
+                else
+                {
+                    typeNamespacesAndNames[typeNamespace] = names = new List<string>();
+                }
+
+                names.Add(typeName);
 
                 var mergedType = new TypeDefinition(type.Namespace, typeName, type.Attributes);
                 originalTypesToMerged.Add(type, mergedType);
@@ -85,6 +153,15 @@ public static class ModuleMerger
             var moduleGlobalClass = module.GetModuleType();
             if (moduleGlobalClass is not null)
                 originalTypesToMerged.Add(moduleGlobalClass, Module.GetOrCreateModuleType());
+        }
+
+        foreach (var (originalType, mergedType) in originalTypesToMerged)
+        {
+            if (mergedType.IsModuleType)
+                continue;
+
+            if (originalType.BaseType is { } baseType)
+                mergedType.BaseType = GetMergedTypeDefOrRef(baseType);
         }
 
         var typeSemantics = new Dictionary<IList<MethodSemantics>, IList<MethodSemantics>>();
@@ -134,9 +211,11 @@ public static class ModuleMerger
 
                 if (originalMethod.Semantics is not null)
                 {
-                    MergeMethodSemantics(originalMethod, mergedMethod);
-                    var mergedSemantics = typeSemantics[originalMethod.Semantics.Association!.Semantics];
-                    mergedSemantics.Add(mergedMethod.Semantics!);
+                    var originalMethodSemantics = originalMethod.Semantics;
+                    var mergedMethodSemantics = new MethodSemantics(mergedMethod, originalMethodSemantics.Attributes);
+
+                    var mergedPropertySemantics = typeSemantics[originalMethodSemantics.Association!.Semantics];
+                    mergedPropertySemantics.Add(mergedMethodSemantics);
                 }
 
                 originalMethodsToMerged.Add(originalMethod, mergedMethod);
@@ -150,7 +229,8 @@ public static class ModuleMerger
                 mergedType.Properties.Add(mergedProperty);
                 mergedProperty.Constant = MergeConstant(originalProperty.Constant);
 
-                MergeSemantics(typeSemantics[originalProperty.Semantics], mergedProperty);
+                foreach (var semantic in typeSemantics[originalProperty.Semantics])
+                    mergedProperty.Semantics.Add(semantic);
 
                 originalPropertiesToMerged.Add(originalProperty, mergedProperty);
                 originalMembersToMerged.Add(originalProperty, mergedProperty);
@@ -162,7 +242,8 @@ public static class ModuleMerger
                 var mergedEvent = new EventDefinition(originalEvent.Name, originalEvent.Attributes, mergedEventType);
                 mergedType.Events.Add(mergedEvent);
 
-                MergeSemantics(typeSemantics[originalEvent.Semantics], mergedEvent);
+                foreach (var semantic in typeSemantics[originalEvent.Semantics])
+                    mergedEvent.Semantics.Add(semantic);
 
                 originalEventsToMerged.Add(originalEvent, mergedEvent);
                 originalMembersToMerged.Add(originalEvent, mergedEvent);
@@ -173,11 +254,6 @@ public static class ModuleMerger
         {
             if (mergedType.IsModuleType)
                 continue;
-
-            MergeCustomAttributes(originalType, mergedType);
-
-            if (originalType.BaseType is { } baseType)
-                mergedType.BaseType = GetMergedTypeDefOrRef(baseType);
 
             foreach (var implementation in originalType.Interfaces)
                 mergedType.Interfaces.Add(MergeInterfaceImplementation(implementation));
@@ -218,19 +294,10 @@ public static class ModuleMerger
             MergeCustomAttributes(originalEvent, mergedEvent);
         }
 
-        foreach (var type in moduleTypes)
-        {
-            foreach (var method in type.Methods)
-            {
-                originalMethodsToMerged.Add(method, method);
-                originalMembersToMerged.Add(method, method);
-            }
-        }
-
         MergeMethodsWithoutPrematureReturns(merged01Cctor, original01CCtors);
 
         foreach (var (originalMethod, mergedMethod) in originalMethodsToMerged)
-            MergeMethodBody(originalMethod, mergedMethod);
+            CloneMethodBody(originalMethod, mergedMethod);
 
         ITypeDefOrRef GetMergedTypeDefOrRef(ITypeDefOrRef? defOrRef) =>
             defOrRef switch
@@ -252,7 +319,7 @@ public static class ModuleMerger
                         if (memberDefinition is MethodDefinition methodDefinition)
                             return GetMergedMethodDefinition(methodDefinition);
 
-            return reference;
+            return new MemberReference(declaringType, reference.Name, signature);
         }
 
         MethodSpecification GetMergedMethodSpecification(MethodSpecification specification)
@@ -321,7 +388,7 @@ public static class ModuleMerger
                     if (memberDefinition is FieldDefinition fieldDefinition)
                         return GetMergedFieldDefinition(fieldDefinition);
 
-            return reference;
+            return new MemberReference(declaringType, reference.Name, signature);
         }
 
         FieldDefinition GetMergedFieldDefinition(FieldDefinition definition) => originalFieldsToMerged.GetValueOrDefault(definition) ?? definition;
@@ -351,19 +418,19 @@ public static class ModuleMerger
         {
             switch (originalSignature)
             {
-                case TypeDefOrRefSignature typeDefOrRefSignature:
-                    if (typeDefOrRefSignature.Type is TypeDefinition originalTypeDefinition)
-                        if (originalTypesToMerged.TryGetValue(originalTypeDefinition, out var mergedTypeDefinition))
-                            return mergedTypeDefinition.ToTypeSignature();
+                case TypeDefOrRefSignature defOrRefSignature:
+                    if (defOrRefSignature.Type is TypeDefinition originalDefinition)
+                        if (originalTypesToMerged.GetValueOrDefault(originalDefinition) is { } mergedDefinition)
+                            return mergedDefinition.ToTypeSignature();
 
-                    if (typeDefOrRefSignature.Type is TypeReference typeReference)
+                    if (defOrRefSignature.Type is TypeReference reference)
                     {
-                        var resolvedDefinition = typeReference.Resolve(Context);
-                        if (resolvedDefinition is not null && originalTypesToMerged.TryGetValue(resolvedDefinition, out var mappedDefinition))
-                            return mappedDefinition.ToTypeSignature();
+                        if (reference.Resolve(Context) is { } resolvedDefinition)
+                            if (originalTypesToMerged.GetValueOrDefault(resolvedDefinition) is { } mappedDefinition)
+                                return mappedDefinition.ToTypeSignature();
                     }
 
-                    return typeDefOrRefSignature;
+                    return defOrRefSignature;
 
                 case GenericInstanceTypeSignature genericInstanceSignature:
                     var mergedGenericInstance = new GenericInstanceTypeSignature(GetMergedTypeDefOrRef(genericInstanceSignature.GenericType), genericInstanceSignature.IsValueType);
@@ -588,24 +655,8 @@ public static class ModuleMerger
             }
         }
 
-        void MergeSemantics(IList<MethodSemantics> source, IHasSemantics destinatoin)
+        void CloneMethodBody(MethodDefinition source, MethodDefinition destination)
         {
-            foreach (var semantic in source)
-                destinatoin.Semantics.Add(new MethodSemantics(semantic.Method, semantic.Attributes));
-        }
-
-        void MergeMethodSemantics(MethodDefinition source, MethodDefinition destination)
-        {
-            destination.Semantics = new MethodSemantics(destination, source.Semantics!.Attributes);
-        }
-
-        void MergeMethodBody(MethodDefinition source, MethodDefinition destination)
-        {
-            if (source.FullName == "System.Void Target1.Program::Main(System.String[])")
-            {
-
-            }
-
             if (source.CilMethodBody is { } sourceMethodBody)
             {
                 var destinationMethodBody = destination.CilMethodBody = new CilMethodBody
@@ -614,9 +665,9 @@ public static class ModuleMerger
                     MaxStack = sourceMethodBody.MaxStack
                 };
 
-                MergeLocalVariables(sourceMethodBody, destinationMethodBody);
-                MergeCilInstructions(sourceMethodBody, destinationMethodBody);
-                MergeExceptionHandlers(sourceMethodBody, destinationMethodBody);
+                CloneLocalVariables(sourceMethodBody, destinationMethodBody);
+                CloneCilInstructions(sourceMethodBody, destinationMethodBody);
+                CloneExceptionHandlers(sourceMethodBody, destinationMethodBody);
             }
 
             if (source.NativeMethodBody is { } nativeMethodBody)
@@ -624,7 +675,7 @@ public static class ModuleMerger
 
             }
 
-            void MergeLocalVariables(CilMethodBody source, CilMethodBody destination)
+            void CloneLocalVariables(CilMethodBody source, CilMethodBody destination)
             {
                 foreach (var variable in source.LocalVariables)
                 {
@@ -633,11 +684,11 @@ public static class ModuleMerger
                 }
             }
 
-            void MergeCilInstructions(CilMethodBody source, CilMethodBody destination)
+            void CloneCilInstructions(CilMethodBody source, CilMethodBody destination)
             {
                 var branches = new List<CilInstruction>();
                 var switches = new List<CilInstruction>();
-
+                    
                 foreach (var instruction in source.Instructions)
                 {
                     var clonedInstruction = CloneInstruction(destination, instruction);
@@ -735,7 +786,7 @@ public static class ModuleMerger
                     };
             }
 
-            void MergeExceptionHandlers(CilMethodBody source, CilMethodBody destination)
+            void CloneExceptionHandlers(CilMethodBody source, CilMethodBody destination)
             {
                 foreach (var handler in source.ExceptionHandlers)
                 {
@@ -747,7 +798,7 @@ public static class ModuleMerger
                         HandlerStart = ToClonedLabel(handler.HandlerStart),
                         HandlerEnd = ToClonedLabel(handler.HandlerEnd),
                         FilterStart = ToClonedLabel(handler.FilterStart),
-                        ExceptionType = handler.ExceptionType??GetMergedTypeDefOrRef(handler.ExceptionType)
+                        ExceptionType = handler.ExceptionType is null ? null : GetMergedTypeDefOrRef(handler.ExceptionType)
                     });
                 }
 

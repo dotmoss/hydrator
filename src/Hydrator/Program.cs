@@ -1,6 +1,7 @@
 ﻿global using static Hydrator.Globals;
 using AsmResolver;
 using AsmResolver.DotNet;
+using AsmResolver.PE.DotNet.Metadata.Tables;
 using System.Text.Json;
 
 namespace Hydrator;
@@ -26,15 +27,17 @@ static class Program
             Console.WriteLine("Wrong program arguments. Enable test environment");
             args = 
             [
-                @"..\..\..\..\..\Target1\bin\x64\Release\net10.0\Target1.dll",
-                @"..\..\..\..\..\Target1\bin\x64\Release\net10.0\Target1_hydrated.dll",
+                @"C:\Data\programming\vs projects\moss\Mossarium.Alpha\src\Mossarium.Alpha\bin\x64\Release\net10.0\win-x64\Mossarium.Alpha.dll",
+                @"C:\Data\programming\vs projects\moss\Mossarium.Alpha\src\Mossarium.Alpha\bin\x64\Release\net10.0\win-x64\Mossarium.Alpha_hydrated.dll",
+                //@"..\..\..\..\..\Target1\bin\x64\Release\net10.0\Target1.dll",
+                //@"..\..\..\..\..\Target1\bin\x64\Release\net10.0\Target1_hydrated.dll",
                 JsonSerializer.Serialize(new ProgramOptions())
             ];
-        }        
+        }
 
         var (inputPath, outputPath, stringOptions) = (args[0], args[1], args[2]);
         (inputPath, outputPath) = (Path.GetFullPath(inputPath), Path.GetFullPath(outputPath));
-
+        
         Options = JsonSerializer.Deserialize<ProgramOptions>(stringOptions)!;
         Options.TargetDirectory = Path.GetDirectoryName(inputPath)!;
 
@@ -55,51 +58,18 @@ static class Program
     {
         if (Options.MergeModules)
         {
-            ModuleMerger.MergeModules(GetModulesForMerge());
+            ModuleMerger.MergeModuleAndReferencesInNewModule();
         }
 
         ModuleUtils.FlattenTypes();
         MetadataRemover.RemoveNullableAttributes();
         MetadataRemover.RemoveAssemblyMetadataAttribute();
-        NamespaceRemover.RemoveNamespaces();
-        NameReducer.ReduceNames();
+        //NamespaceRemover.RemoveNamespaces();
+        //NameReducer.ReduceNames();
 
         VisibilityUtils.SolveVisibilityConflicts();
         //var genericParameters = TypeResolver.ResolveAllGenericParameters(module);
         //RemoveEmptyTypes(module, genericParameters);
-
-        List<ModuleDefinition> GetModulesForMerge()
-        {
-            var modules = new List<ModuleDefinition>();
-            GetReferences(Module, modules);
-
-            return modules;
-
-            void GetReferences(ModuleDefinition module, List<ModuleDefinition> references)
-            {
-                foreach (var reference in Module.AssemblyReferences)
-                {
-                    try
-                    {
-                        if (reference.Resolve(Module.RuntimeContext) is { } assembly)
-                        {
-                            foreach (var assemblyModule in assembly.Modules)
-                            {
-                                if (assemblyModule.FilePath is { } assemblyPath && !assemblyPath.Contains(@"dotnet\shared"))
-                                {
-                                    if (references.Contains(assemblyModule))
-                                        continue;
-
-                                    modules.Add(assemblyModule);
-                                    GetReferences(assemblyModule, references);
-                                }
-                            }
-                        }
-                    }
-                    catch { }
-                }
-            }
-        }
     }
 
     static void RemoveEmptyTypes(ModuleDefinition module, List<TypeDefinition> ignoredTypes)
